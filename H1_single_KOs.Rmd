@@ -2,10 +2,6 @@
 title: "RNAseq_prep_H1_Fer"
 author: "Mukhtar Sadykov"
 date: "12/1/2021"
-output:
-  ioslides_presentation: default
-  slidy_presentation: default
-  beamer_presentation: default
 ---
 
 ```{r setup, include=FALSE}
@@ -16,7 +12,7 @@ knitr::opts_chunk$set(echo = FALSE)
 
 ## General overview
 
-RNAseq read quality was assessed using FASTQC quality control tool [ref]. Read trimming tool Trimmomatic [ref] was used to remove low quality reads and Illumina adapter sequences. Quality trimmed reads were mapped to human GRCh38.p13 primary assembly using STAR (version 2.6.1) [ref]. Subsequently, gene counts were derived from the number of uniquely aligned unambiguous reads by Subread:featureCount (version v2.0.2) [ref] and library sizes were scale-normalized by the trimmed mean of M values (TMM) method using EdgeR software[ref]. The R package limma[ref] with the voomWithQualityWeights function [ref] was utilized to calculate the weighted likelihoods for all samples, based on the observed mean–variance relationship of every gene and sample. Genes with fold change greater than two and false discovery rate corrected p-value (Benjamini-Hochberg procedure) < 0.05 were considered to be differentially expressed.
+RNAseq read quality was assessed using FASTQC quality control tool. The reads were mapped to human GRCh38.p13 primary assembly using STAR (version 2.6.1). Subsequently, gene counts were derived from the number of uniquely aligned unambiguous reads by Subread:featureCount (version v2.0.2) and library sizes were scale-normalized by the trimmed mean of M values (TMM) method using EdgeR software. The R package limma with the voomWithQualityWeights function was utilized to calculate the weighted likelihoods for all samples, based on the observed mean–variance relationship of every gene and sample. Genes with fold change greater than two and false discovery rate corrected p-value (Benjamini-Hochberg procedure) < 0.05 were considered to be differentially expressed.
 
 ## Preprocessing of a count table
 
@@ -27,7 +23,7 @@ pacman::p_load(limma, Glimma, edgeR, AnnotationDbi,org.Hs.eg.db, EnsDb.Hsapiens.
 setwd("/Users/sadykom/Desktop/lab/Fer_H1s_RNAseq/RNA_seq2")
 ```
 
-### Batch normalization
+### Batch normalization (for MDS, heatmap visualization)
 
 Since the samples were collected in different times, and libraries were made separately, it is important to adjust for batch effect. ComBatSeq ([Zhang et al., 2020. NAR](https://doi.org/10.1093/nargab/lqaa078)) was used for that purpose. It uses a negative binomial regression model that retains the integer nature of count data in RNA-seq studies, making the batch adjusted data compatible with common differential expression software packages that require integer counts.
 
@@ -116,7 +112,8 @@ save(batch_norm, file="output/GSE50760_batch_norm_forDAVID.rda", compress=TRUE)
 
 ```{r}
 rm(list=ls())
-cts  <- read.csv("batch_correction_2.csv", row.names = 1) # 60663
+# upload original count matrix
+cts  <- read.csv("Table_35s.csv", row.names = 1) 
 study <- read.delim("meta.tsv", row.names=1)
 # check if every subject has a KO assosiated to it 
 with(study, table(SubjectID, Tx))
@@ -274,19 +271,23 @@ rm(list=ls())
 To generate the MDS plot, limma's function plotMDS was used. Multidimensional scaling (MDS) is a technique for visualizing distances between objects, where the distance is known between pairs of the objects. The input to multidimensional scaling is a distance matrix. It plots samples on a two-dimensional scatterplot so that distances on the plot approximate the typical log2 fold changes between the samples.
 
 ```{r}
-load("output/GSE50760_norm_forDAVID.rda", verbose = TRUE)
-mdf <- plotMDS(cpm(norm, log=T), top=nrow(norm), plot=F, dim.plot = c(1,2), var.explained = TRUE)
+load("output/GSE50760_batch_norm_forDAVID.rda", verbose = TRUE)
+
+keep <- setdiff(colnames(batch_norm), c("WT_2"))
+batch_norm <- batch_norm[ , keep]
+
+mdf <- plotMDS(cpm(batch_norm, log=T), top=nrow(batch_norm), plot=T, dim.plot = c(1,2), var.explained = TRUE)
 head(mdf$eigen.vectors) # coordinates of each samples on the mds plot
 
 head(mdf$x) ## x coord
 mdf <- data.frame(Comp1=mdf$x, Comp2=mdf$y, 
-                  lab=colnames(norm), 
-                  Tx=norm$samples$Tx)
+                  lab=colnames(batch_norm), 
+                  Tx=batch_norm$samples$Tx)
 
 ggplot(mdf, aes(x=Comp1, y=Comp2, label=lab, col=Tx)) +
   geom_point() +
   geom_text_repel() +
-  ggtitle("MDS plot of H1's KO's") +
+  ggtitle("MDS plot of H1's SKO's") +
   theme(legend.position="top")+ theme_classic()
 ```
 MDS helps to reduce the dimensionality of the samples, which might show similarities/differences between samples. It also useful in case if there are any outliers present.
@@ -343,11 +344,13 @@ The extra parameter in the model allows it to be more flexible. In general, we s
 
 As mentioned in our earlier description of basic models (Figure 1), models with and without an intercept term are equivalent for factor explanatory variables, but differ in parameterisation. This means that the expected expression values for healthy and sick mice are the same regardless of whether a means model (without an intercept term in the design matrix) or a mean-reference model (with an intercept term in the design matrix) is fitted. The only difference is that the expected gene expression for sick mice is calculated by summing both parameter estimates in a mean-reference model, whereas it is estimated directly as the second parameter in a means model. For this reason, it ultimately does not matter which design matrix is used. We recommend the use of whichever design matrix that is better understood by the reader, which is often the design matrix without the intercept term since the interpretation of parameters is more straightforward
 ```{r}
-study_outlier <- read.delim("meta_outlier.txt", row.names=1)
-mm <- model.matrix( ~ 0 + Tx, data=study_outlier)
-mm <- model.matrix( ~ 0 + Tx, data=norm$samples) # I have used mm without intercept, since models with and without an intercept term are equivalent for factor explanatory variables. Also, to design contrast matrices for pairwise comparison, it is convenient to compare with mm without intercept.
+#study_outlier <- read.delim("meta_outlier.txt", row.names=1)
+mm <- model.matrix( ~ 0 + Tx + Batch, data=norm$samples) # I have used mm without intercept, since models with and without an intercept term are equivalent for factor explanatory variables. Also, to design contrast matrices for pairwise comparison, it is convenient to compare with mm without intercept. Batch was put as a covariate to adjust for covariate.
 colnames(mm) <- gsub("Tx", "", colnames(mm))
 head(mm,10)
+
+## Alternatively the linear model using the factor batch can be used on not batch normalized data (no use of Combat seq). I applied these two methods to get DEGs for DKOs samples.
+# mm <- model.matrix( ~ 0 + Tx + Batch, data=norm$samples)
 ```
 
 ## Limma-voom
@@ -380,22 +383,6 @@ cm <- makeContrasts(
   H1.4vWT = KO_4 - WT,
   H1.5vWT = KO_5 - WT,
   H1.XvWT = KO_X - WT,
-  H1.XvH1.1 = KO_X - KO_1,
-  H1.XvH1.2 = KO_X - KO_2,
-  H1.XvH1.3 = KO_X - KO_3,
-  H1.XvH1.4 = KO_X - KO_4,
-  H1.XvH1.5 = KO_X - KO_5,
-  H1.3vH1.1 = KO_3 - KO_1,
-  H1.3vH1.2 = KO_3 - KO_2,
-  H1.3vH1.4 = KO_3 - KO_4,
-  H1.3vH1.5 = KO_3 - KO_5,
-  H1.3vH1.X = KO_4 - KO_X,
-  H1.0vH1.1 = KO_0 - KO_1,
-  H1.0vH1.2 = KO_0 - KO_2,
-  H1.1vH1.2 = KO_1 - KO_2,
-  H1.4vH1.5 = KO_4 - KO_5,
-  H1.1vH1.5 = KO_1 - KO_5,
-  #Outliers = WT - WT_O,
   levels= mm )
 ```
 
@@ -406,6 +393,7 @@ cm <- makeContrasts(
 
 Empirical Bayes smoothing of gene-wise standard deviations provides increased power.
 
+
 ```{r}
 fit <- lmFit(vm[ , rownames(mm) ], mm) # lmFit fits a linear model using weighted least squares for each gene
 fit <- contrasts.fit(fit, cm) # Estimate contrast for each gene
@@ -414,7 +402,8 @@ fit <- eBayes(fit, trend=TRUE) # Empirical Bayes smoothing of standard errors (s
 
 ## Summary tables for H1 KOs
 
-Identify which genes are significantly differentially expressed for each contrast from a fit object containing p-values and test statistics. 
+Identify which genes are significantly differentially expressed for each contrast from a fit object containing p-values and test statistics.
+
 ```{r}
 summary(decideTests(fit)) # Default p valut is 0.05.
 ```
@@ -444,6 +433,7 @@ write.csv(file = "summary_table_treat_sig2.txt", as.data.frame(summary(dt)))
 ## Toptable
 
 ```{r}
+# Created two significance levels: sig and sig2. Sig based on FC and FDR.
 tt1 <- topTable(fit, coef="H1.0vWT", adjust.method="fdr", n=Inf) %>% 
   rownames_to_column("ID") %>% 
   arrange(P.Value) %>% 
@@ -503,127 +493,7 @@ tt7 <- topTable(fit, coef="H1.XvWT", adjust.method="fdr", n=Inf) %>%
   dplyr::select(ID, ENSGID, SYMBOL, 
                 H1.XvWT_LFC=logFC, H1.XvWT_P=P.Value, H1.XvWT_FDR=adj.P.Val, H1.XvWT_sig=sig, H1.XvWT_sig2=sig2)
 
-tt8 <- topTable(fit, coef="H1.XvH1.1", adjust.method="fdr", n=Inf) %>% 
-  rownames_to_column("ID") %>% 
-  arrange(P.Value) %>% 
-  mutate(sig  = sign(logFC)*( abs(logFC) > log2(2) & adj.P.Val < 0.05 ),
-         sig2 = sign(logFC)*( abs(logFC) > log2(4) & adj.P.Val < 0.01 )) %>% 
-  dplyr::select(ID, ENSGID, SYMBOL, 
-                H1.XvH1.1_LFC=logFC, H1.XvH1.1_P=P.Value, H1.XvH1.1_FDR=adj.P.Val, H1.XvH1.1_sig=sig, H1.XvH1.1_sig2=sig2)
-
-tt9 <- topTable(fit, coef="H1.XvH1.2", adjust.method="fdr", n=Inf) %>% 
-  rownames_to_column("ID") %>% 
-  arrange(P.Value) %>% 
-  mutate(sig  = sign(logFC)*( abs(logFC) > log2(2) & adj.P.Val < 0.05 ),
-         sig2 = sign(logFC)*( abs(logFC) > log2(4) & adj.P.Val < 0.01 )) %>% 
-  dplyr::select(ID, ENSGID, SYMBOL, 
-                H1.XvH1.2_LFC=logFC, H1.XvH1.2_P=P.Value, H1.XvH1.2_FDR=adj.P.Val, H1.XvH1.2_sig=sig, H1.XvH1.2_sig2=sig2)
-
-tt10 <- topTable(fit, coef="H1.XvH1.3", adjust.method="fdr", n=Inf) %>% 
-  rownames_to_column("ID") %>% 
-  arrange(P.Value) %>% 
-  mutate(sig  = sign(logFC)*( abs(logFC) > log2(2) & adj.P.Val < 0.05 ),
-         sig2 = sign(logFC)*( abs(logFC) > log2(4) & adj.P.Val < 0.01 )) %>% 
-  dplyr::select(ID, ENSGID, SYMBOL, 
-                H1.XvH1.3_LFC=logFC, H1.XvH1.3_P=P.Value, H1.XvH1.3_FDR=adj.P.Val, H1.XvH1.3_sig=sig, H1.XvH1.3_sig2=sig2)
-
-tt11 <- topTable(fit, coef="H1.XvH1.4", adjust.method="fdr", n=Inf) %>% 
-  rownames_to_column("ID") %>% 
-  arrange(P.Value) %>% 
-  mutate(sig  = sign(logFC)*( abs(logFC) > log2(2) & adj.P.Val < 0.05 ),
-         sig2 = sign(logFC)*( abs(logFC) > log2(4) & adj.P.Val < 0.01 )) %>% 
-  dplyr::select(ID, ENSGID, SYMBOL, 
-                H1.XvH1.4_LFC=logFC, H1.XvH1.4_P=P.Value, H1.XvH1.4_FDR=adj.P.Val, H1.XvH1.4_sig=sig, H1.XvH1.4_sig2=sig2)
-
-tt12 <- topTable(fit, coef="H1.XvH1.5", adjust.method="fdr", n=Inf) %>% 
-  rownames_to_column("ID") %>% 
-  arrange(P.Value) %>% 
-  mutate(sig  = sign(logFC)*( abs(logFC) > log2(2) & adj.P.Val < 0.05 ),
-         sig2 = sign(logFC)*( abs(logFC) > log2(4) & adj.P.Val < 0.01 )) %>% 
-  dplyr::select(ID, ENSGID, SYMBOL, 
-                H1.XvH1.5_LFC=logFC, H1.XvH1.5_P=P.Value, H1.XvH1.5_FDR=adj.P.Val, H1.XvH1.5_sig=sig, H1.XvH1.5_sig2=sig2)
-
-tt13 <- topTable(fit, coef="H1.3vH1.1", adjust.method="fdr", n=Inf) %>% 
-  rownames_to_column("ID") %>% 
-  arrange(P.Value) %>% 
-  mutate(sig  = sign(logFC)*( abs(logFC) > log2(2) & adj.P.Val < 0.05 ),
-         sig2 = sign(logFC)*( abs(logFC) > log2(4) & adj.P.Val < 0.01 )) %>% 
-  dplyr::select(ID, ENSGID, SYMBOL, 
-                H1.3vH1.1_LFC=logFC, H1.3vH1.1_P=P.Value, H1.3vH1.1_FDR=adj.P.Val, H1.3vH1.1_sig=sig, H1.3vH1.1_sig2=sig2)
-
-tt14 <- topTable(fit, coef="H1.3vH1.2", adjust.method="fdr", n=Inf) %>% 
-  rownames_to_column("ID") %>% 
-  arrange(P.Value) %>% 
-  mutate(sig  = sign(logFC)*( abs(logFC) > log2(2) & adj.P.Val < 0.05 ),
-         sig2 = sign(logFC)*( abs(logFC) > log2(4) & adj.P.Val < 0.01 )) %>% 
-  dplyr::select(ID, ENSGID, SYMBOL, 
-                H1.3vH1.2_LFC=logFC, H1.3vH1.2_P=P.Value, H1.3vH1.2_FDR=adj.P.Val, H1.3vH1.2_sig=sig, H1.3vH1.2_sig2=sig2)
-
-tt15 <- topTable(fit, coef="H1.3vH1.4", adjust.method="fdr", n=Inf) %>% 
-  rownames_to_column("ID") %>% 
-  arrange(P.Value) %>% 
-  mutate(sig  = sign(logFC)*( abs(logFC) > log2(2) & adj.P.Val < 0.05 ),
-         sig2 = sign(logFC)*( abs(logFC) > log2(4) & adj.P.Val < 0.01 )) %>% 
-  dplyr::select(ID, ENSGID, SYMBOL, 
-                H1.3vH1.4_LFC=logFC, H1.3vH1.4_P=P.Value, H1.3vH1.4_FDR=adj.P.Val, H1.3vH1.4_sig=sig, H1.3vH1.4_sig2=sig2)
-
-tt16 <- topTable(fit, coef="H1.3vH1.5", adjust.method="fdr", n=Inf) %>% 
-  rownames_to_column("ID") %>% 
-  arrange(P.Value) %>% 
-  mutate(sig  = sign(logFC)*( abs(logFC) > log2(2) & adj.P.Val < 0.05 ),
-         sig2 = sign(logFC)*( abs(logFC) > log2(4) & adj.P.Val < 0.01 )) %>% 
-  dplyr::select(ID, ENSGID, SYMBOL, 
-                H1.3vH1.5_LFC=logFC, H1.3vH1.5_P=P.Value, H1.3vH1.5_FDR=adj.P.Val, H1.3vH1.5_sig=sig, H1.3vH1.5_sig2=sig2)
-
-tt17 <- topTable(fit, coef="H1.3vH1.X", adjust.method="fdr", n=Inf) %>% 
-  rownames_to_column("ID") %>% 
-  arrange(P.Value) %>% 
-  mutate(sig  = sign(logFC)*( abs(logFC) > log2(2) & adj.P.Val < 0.05 ),
-         sig2 = sign(logFC)*( abs(logFC) > log2(4) & adj.P.Val < 0.01 )) %>% 
-  dplyr::select(ID, ENSGID, SYMBOL, 
-                H1.3vH1.X_LFC=logFC, H1.3vH1.X_P=P.Value, H1.3vH1.X_FDR=adj.P.Val, H1.3vH1.X_sig=sig, H1.3vH1.X_sig2=sig2)
-
-tt18 <- topTable(fit, coef="H1.0vH1.1", adjust.method="fdr", n=Inf) %>% 
-  rownames_to_column("ID") %>% 
-  arrange(P.Value) %>% 
-  mutate(sig  = sign(logFC)*( abs(logFC) > log2(2) & adj.P.Val < 0.05 ),
-         sig2 = sign(logFC)*( abs(logFC) > log2(4) & adj.P.Val < 0.01 )) %>% 
-  dplyr::select(ID, ENSGID, SYMBOL, 
-                H1.0vH1.1_LFC=logFC, H1.0vH1.1_P=P.Value, H1.0vH1.1_FDR=adj.P.Val, H1.0vH1.1_sig=sig, H1.0vH1.1_sig2=sig2)
-
-tt19 <- topTable(fit, coef="H1.0vH1.2", adjust.method="fdr", n=Inf) %>% 
-  rownames_to_column("ID") %>% 
-  arrange(P.Value) %>% 
-  mutate(sig  = sign(logFC)*( abs(logFC) > log2(2) & adj.P.Val < 0.05 ),
-         sig2 = sign(logFC)*( abs(logFC) > log2(4) & adj.P.Val < 0.01 )) %>% 
-  dplyr::select(ID, ENSGID, SYMBOL, 
-                H1.0vH1.2_LFC=logFC, H1.0vH1.2_P=P.Value, H1.0vH1.2_FDR=adj.P.Val, H1.0vH1.2_sig=sig, H1.0vH1.2_sig2=sig2)
-
-tt20 <- topTable(fit, coef="H1.1vH1.2", adjust.method="fdr", n=Inf) %>% 
-  rownames_to_column("ID") %>% 
-  arrange(P.Value) %>% 
-  mutate(sig  = sign(logFC)*( abs(logFC) > log2(2) & adj.P.Val < 0.05 ),
-         sig2 = sign(logFC)*( abs(logFC) > log2(4) & adj.P.Val < 0.01 )) %>% 
-  dplyr::select(ID, ENSGID, SYMBOL, 
-                H1.1vH1.2_LFC=logFC, H1.1vH1.2_P=P.Value, H1.1vH1.2_FDR=adj.P.Val, H1.1vH1.2_sig=sig, H1.1vH1.2_sig2=sig2)
-
-tt21 <- topTable(fit, coef="H1.4vH1.5", adjust.method="fdr", n=Inf) %>% 
-  rownames_to_column("ID") %>% 
-  arrange(P.Value) %>% 
-  mutate(sig  = sign(logFC)*( abs(logFC) > log2(2) & adj.P.Val < 0.05 ),
-         sig2 = sign(logFC)*( abs(logFC) > log2(4) & adj.P.Val < 0.01 )) %>% 
-  dplyr::select(ID, ENSGID, SYMBOL, 
-                H1.4vH1.5_LFC=logFC, H1.4vH1.5_P=P.Value, H1.4vH1.5_FDR=adj.P.Val, H1.4vH1.5_sig=sig, H1.4vH1.5_sig2=sig2)
-
-tt22 <- topTable(fit, coef="Outliers", adjust.method="fdr", n=Inf) %>% 
-  rownames_to_column("ID") %>% 
-  arrange(P.Value) %>% 
-  mutate(sig  = sign(logFC)*( abs(logFC) > log2(2) & adj.P.Val < 0.05 ),
-         sig2 = sign(logFC)*( abs(logFC) > log2(4) & adj.P.Val < 0.01 )) %>% 
-  dplyr::select(ID, ENSGID, SYMBOL, 
-                Outliers_LFC=logFC, Outliers_P=P.Value, Outliers_FDR=adj.P.Val, Outliers_sig=sig, Outliers_sig2=sig2)
-
-tt <- plyr::join(tt, tt22)
+tt <- plyr::join(tt1, tt2)
 rm(list=setdiff(ls(), c("norm", "tt", "vm")))
 
 # save tt
@@ -718,106 +588,6 @@ EnhancedVolcano(tt, lab=tt$SYMBOL,
                 ylab = bquote(~-Log[10] ~ italic( "adjusted p-value")),
                 title="H1.X_KO vs WT") +
   theme(legend.position="none")
-
-max( -log10(tt$H1.XvH1.1_FDR) )
-EnhancedVolcano(tt, lab=tt$SYMBOL,
-                x="H1.XvH1.1_LFC", y="H1.XvH1.1_FDR",
-                pCutoff=0.01, ylim=c(0, 19),
-                #selectLab = c("EVI2B",	"CLEC2A",	"KLK14",	"KLRF2",	"CX3CL1",	"C3",	"STX1A",	"SEC31B",	"ALAS2",	"MAPK15",	"H1FX",	"HIST1H1C",	"HIST1H1D",	"HIST1H1E",	"HIST1H1B",	"SIX6",	"MALAT1"),
-                drawConnectors = TRUE,
-                ylab = bquote(~-Log[10] ~ italic( "adjusted p-value")),
-                title="H1.X_KO vs H1.1_KO") +
-  theme(legend.position="none")
-
-max( -log10(tt$H1.XvH1.2_FDR) )
-EnhancedVolcano(tt, lab=tt$SYMBOL,
-                x="H1.XvH1.2_LFC", y="H1.XvH1.2_FDR",
-                pCutoff=0.01, ylim=c(0, 19),
-                #selectLab = c("EVI2B",	"CLEC2A",	"KLK14",	"KLRF2",	"CX3CL1",	"C3",	"STX1A",	"SEC31B",	"ALAS2",	"MAPK15",	"H1FX",	"HIST1H1C",	"HIST1H1D",	"HIST1H1E",	"HIST1H1B",	"SIX6",	"MALAT1"),
-                drawConnectors = TRUE,
-                ylab = bquote(~-Log[10] ~ italic( "adjusted p-value")),
-                title="H1.X_KO vs H1.2_KO") +
-  theme(legend.position="none")
-
-max( -log10(tt$H1.XvH1.3_FDR) )
-EnhancedVolcano(tt, lab=tt$SYMBOL,
-                x="H1.XvH1.3_LFC", y="H1.XvH1.3_FDR",
-                pCutoff=0.01, ylim=c(0, 19),
-                #selectLab = c("EVI2B",	"CLEC2A",	"KLK14",	"KLRF2",	"CX3CL1",	"C3",	"STX1A",	"SEC31B",	"ALAS2",	"MAPK15",	"H1FX",	"HIST1H1C",	"HIST1H1D",	"HIST1H1E",	"HIST1H1B",	"SIX6",	"MALAT1"),
-                drawConnectors = TRUE,
-                ylab = bquote(~-Log[10] ~ italic( "adjusted p-value")),
-                title="H1.X_KO vs H1.3_KO") +
-  theme(legend.position="none")
-
-max( -log10(tt$H1.XvH1.4_FDR) )
-EnhancedVolcano(tt, lab=tt$SYMBOL,
-                x="H1.XvH1.4_LFC", y="H1.XvH1.4_FDR",
-                pCutoff=0.01, ylim=c(0, 19),
-                #selectLab = c("EVI2B",	"CLEC2A",	"KLK14",	"KLRF2",	"CX3CL1",	"C3",	"STX1A",	"SEC31B",	"ALAS2",	"MAPK15",	"H1FX",	"HIST1H1C",	"HIST1H1D",	"HIST1H1E",	"HIST1H1B",	"SIX6",	"MALAT1"),
-                drawConnectors = TRUE,
-                ylab = bquote(~-Log[10] ~ italic( "adjusted p-value")),
-                title="H1.X_KO vs H1.4_KO") +
-  theme(legend.position="none")
-
-max( -log10(tt$H1.XvH1.5_FDR) )
-EnhancedVolcano(tt, lab=tt$SYMBOL,
-                x="H1.XvH1.5_LFC", y="H1.XvH1.5_FDR",
-                pCutoff=0.01, ylim=c(0, 19),
-                #selectLab = c("EVI2B",	"CLEC2A",	"KLK14",	"KLRF2",	"CX3CL1",	"C3",	"STX1A",	"SEC31B",	"ALAS2",	"MAPK15",	"H1FX",	"HIST1H1C",	"HIST1H1D",	"HIST1H1E",	"HIST1H1B",	"SIX6",	"MALAT1"),
-                drawConnectors = TRUE,
-                ylab = bquote(~-Log[10] ~ italic( "adjusted p-value")),
-                title="H1.X_KO vs H1.5_KO") +
-  theme(legend.position="none")
-
-max( -log10(tt$H1.3vH1.1_FDR) )
-EnhancedVolcano(tt, lab=tt$SYMBOL,
-                x="H1.3vH1.1_LFC", y="H1.3vH1.1_FDR",
-                pCutoff=0.01, ylim=c(0, 19),
-                #selectLab = c("EVI2B",	"CLEC2A",	"KLK14",	"KLRF2",	"CX3CL1",	"C3",	"STX1A",	"SEC31B",	"ALAS2",	"MAPK15",	"H1FX",	"HIST1H1C",	"HIST1H1D",	"HIST1H1E",	"HIST1H1B",	"SIX6",	"MALAT1"),
-                drawConnectors = TRUE,
-                ylab = bquote(~-Log[10] ~ italic( "adjusted p-value")),
-                title="H1.3_KO vs H1.1_KO") +
-  theme(legend.position="none")
-
-max( -log10(tt$H1.3vH1.2_FDR) )
-EnhancedVolcano(tt, lab=tt$SYMBOL,
-                x="H1.3vH1.2_LFC", y="H1.3vH1.2_FDR",
-                pCutoff=0.01, ylim=c(0, 19),
-                #selectLab = c("EVI2B",	"CLEC2A",	"KLK14",	"KLRF2",	"CX3CL1",	"C3",	"STX1A",	"SEC31B",	"ALAS2",	"MAPK15",	"H1FX",	"HIST1H1C",	"HIST1H1D",	"HIST1H1E",	"HIST1H1B",	"SIX6",	"MALAT1"),
-                drawConnectors = TRUE,
-                ylab = bquote(~-Log[10] ~ italic( "adjusted p-value")),
-                title="H1.3_KO vs H1.2_KO") +
-  theme(legend.position="none")
-
-max( -log10(tt$H1.3vH1.4_FDR) )
-EnhancedVolcano(tt, lab=tt$SYMBOL,
-                x="H1.3vH1.4_LFC", y="H1.3vH1.4_FDR",
-                pCutoff=0.01, ylim=c(0, 19),
-                #selectLab = c("EVI2B",	"CLEC2A",	"KLK14",	"KLRF2",	"CX3CL1",	"C3",	"STX1A",	"SEC31B",	"ALAS2",	"MAPK15",	"H1FX",	"HIST1H1C",	"HIST1H1D",	"HIST1H1E",	"HIST1H1B",	"SIX6",	"MALAT1"),
-                drawConnectors = TRUE,
-                ylab = bquote(~-Log[10] ~ italic( "adjusted p-value")),
-                title="H1.3_KO vs H1.4_KO") +
-  theme(legend.position="none")
-
-max( -log10(tt$H1.3vH1.5_FDR) )
-EnhancedVolcano(tt, lab=tt$SYMBOL,
-                x="H1.3vH1.5_LFC", y="H1.3vH1.5_FDR",
-                pCutoff=0.01, ylim=c(0, 19),
-                #selectLab = c("EVI2B",	"CLEC2A",	"KLK14",	"KLRF2",	"CX3CL1",	"C3",	"STX1A",	"SEC31B",	"ALAS2",	"MAPK15",	"H1FX",	"HIST1H1C",	"HIST1H1D",	"HIST1H1E",	"HIST1H1B",	"SIX6",	"MALAT1"),
-                drawConnectors = TRUE,
-                ylab = bquote(~-Log[10] ~ italic( "adjusted p-value")),
-                title="H1.3_KO vs H1.5_KO") +
-  theme(legend.position="none")
-
-max( -log10(tt$H1.3vH1.X_FDR) )
-EnhancedVolcano(tt, lab=tt$SYMBOL,
-                x="H1.3vH1.X_LFC", y="H1.3vH1.X_FDR",
-                pCutoff=0.01, ylim=c(0, 19),
-                #selectLab = c("EVI2B",	"CLEC2A",	"KLK14",	"KLRF2",	"CX3CL1",	"C3",	"STX1A",	"SEC31B",	"ALAS2",	"MAPK15",	"H1FX",	"HIST1H1C",	"HIST1H1D",	"HIST1H1E",	"HIST1H1B",	"SIX6",	"MALAT1"),
-                drawConnectors = TRUE,
-                ylab = bquote(~-Log[10] ~ italic( "adjusted p-value")),
-                title="H1.3_KO vs H1.X_KO") +
-  theme(legend.position="none")
 dev.off()
 ```
 
@@ -860,56 +630,15 @@ save_pheatmap_pdf <- function(x, filename, width=7, height=7) {
 }
 save_pheatmap_pdf(heatmap1, "Hist_antisense_500.pdf")
 
-# 1. Venn Diagrams: 0vsWT, 1vsWT, 2vsWT, 3vsWT, 4vsWT, 5vsWT, XvsWT. 3vsX; 1vs2vs0; 4vs5
-# 2. Circus updated. Metascape update 13736 genes.
-# 3. Histograms with clustered genes for functional analysis. 13736; 5000; 1000; 500; 100; 50. 
-# 4. Histone compensation, redo with H1_4_3.
-# 5. 
-```
-```{r}
-#Re-order original data (genes) to match ordering in heatmap (top-to-bottom)
-rownames(lcpm[heatmap1$tree_row[["order"]],])
-#Re-order original data (samples) to match ordering in heatmap (left-to-right)
-colnames(lcpm[heatmap1$tree_row[["order"]],])
-
-#If you want something like gene-to-cluster assignment, you can 'cut' your row dendrogram into a pre-selected number of groups as follows:
-
-#2 groups
-sort(cutree(heatmap1$tree_row, k=8))
-write.csv(sort(cutree(heatmap1$tree_row, k=3)), 'Hist_antisense_500_3_groups.csv')
-
-dend <- plot(heatmap1$tree_row)
-abline(h=8, col = "red")
-
-plot(heatmap1$tree_row, cex = 0.6)
-rect.hclust(heatmap1$tree_row, k = 8, border = 2:5)
-
-# https://uc-r.github.io/hc_clustering#optimal 
-# https://www.atsjournals.org/doi/10.1165/rcmb.2017-0430TR 
-library(factoextra)
-s1 <- fviz_nbclust(lcpm[i,], FUN = hcut, method = "silhouette")
-s2 <- fviz_nbclust(lcpm[i,], FUN = hcut, method = "wss")
-
-```
-
-```{r}
-novel_transcript <- read.csv('output/novel_transcript.csv', row.names = 1)
-antisense <- read.csv("output/antisense.csv", row.names = 1)
-merged <- rbind(novel_transcript,antisense, by = 0)
-write.csv(unique(merged), file = "lncRNAs_novelTranscripts_antisense.csv")
 ```
 
 
-MCLUST
+#MCLUST
 ```{r}
 # mclust package
 library(mclust)
 mc <- Mclust(lcpm[i,])
 plot(mc)
-
-
-library(factoextra)
-fviz_mclust_bic(mc)
 ```
 
 
@@ -954,81 +683,8 @@ tt %>% dplyr::filter(H1.XvWT_sig==1) %>% arrange(desc(H1.XvWT_LFC)) %>%
   pull(ENSGID) %>% mywrite(file="output/siglist_H1.XvWT_up.txt")
 tt %>% dplyr::filter(H1.XvWT_sig==-1) %>% arrange(H1.XvWT_LFC) %>% 
   pull(ENSGID) %>% mywrite(file="output/siglist_H1.XvWT_down.txt")
-# H1.XvsH1s
-tt %>% dplyr::filter(H1.XvH1.1_sig==1) %>% arrange(desc(H1.XvH1.1_LFC)) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.XvH1.1_up.txt")
-tt %>% dplyr::filter(H1.XvH1.1_sig==-1) %>% arrange(H1.XvH1.1_LFC) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.XvH1.1_down.txt")
-
-tt %>% dplyr::filter(H1.XvH1.2_sig==1) %>% arrange(desc(H1.XvH1.2_LFC)) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.XvH1.2_up.txt")
-tt %>% dplyr::filter(H1.XvH1.2_sig==-1) %>% arrange(H1.XvH1.2_LFC) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.XvH1.2_down.txt")
-
-tt %>% dplyr::filter(H1.XvH1.3_sig==1) %>% arrange(desc(H1.XvH1.3_LFC)) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.XvH1.3_up.txt")
-tt %>% dplyr::filter(H1.XvH1.3_sig==-1) %>% arrange(H1.XvH1.3_LFC) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.XvH1.3_down.txt")
-
-tt %>% dplyr::filter(H1.XvH1.4_sig==1) %>% arrange(desc(H1.XvH1.4_LFC)) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.XvH1.4_up.txt")
-tt %>% dplyr::filter(H1.XvH1.4_sig==-1) %>% arrange(H1.XvH1.4_LFC) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.XvH1.4_down.txt")
-
-tt %>% dplyr::filter(H1.XvH1.5_sig==1) %>% arrange(desc(H1.XvH1.5_LFC)) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.XvH1.5_up.txt")
-tt %>% dplyr::filter(H1.XvH1.5_sig==-1) %>% arrange(H1.XvH1.5_LFC) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.XvH1.5_down.txt")
-
-# H1.3vsH1s
-tt %>% dplyr::filter(H1.3vH1.1_sig==1) %>% arrange(desc(H1.3vH1.1_LFC)) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.3vH1.1_up.txt")
-tt %>% dplyr::filter(H1.3vH1.1_sig==-1) %>% arrange(H1.3vH1.1_LFC) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.3vH1.1_down.txt")
-
-tt %>% dplyr::filter(H1.3vH1.2_sig==1) %>% arrange(desc(H1.3vH1.2_LFC)) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.3vH1.2_up.txt")
-tt %>% dplyr::filter(H1.3vH1.2_sig==-1) %>% arrange(H1.3vH1.2_LFC) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.3vH1.2_down.txt")
-
-tt %>% dplyr::filter(H1.3vH1.4_sig==1) %>% arrange(desc(H1.3vH1.4_LFC)) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.3vH1.1_up.txt")
-tt %>% dplyr::filter(H1.3vH1.4_sig==-1) %>% arrange(H1.3vH1.4_LFC) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.3vH1.4_down.txt")
-
-tt %>% dplyr::filter(H1.3vH1.5_sig==1) %>% arrange(desc(H1.3vH1.5_LFC)) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.3vH1.5_up.txt")
-tt %>% dplyr::filter(H1.3vH1.5_sig==-1) %>% arrange(H1.3vH1.5_LFC) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.3vH1.5_down.txt")
-
-tt %>% dplyr::filter(H1.3vH1.X_sig==1) %>% arrange(desc(H1.3vH1.X_LFC)) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.3vH1.X_up.txt")
-tt %>% dplyr::filter(H1.3vH1.X_sig==-1) %>% arrange(H1.3vH1.X_LFC) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.3vH1.X_down.txt")
-
-# H1.0vs1,2 and H1.4 vs H1.5
-
-tt %>% dplyr::filter(H1.0vH1.1_sig==1) %>% arrange(desc(H1.0vH1.1_LFC)) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.0vH1.1_up.txt")
-tt %>% dplyr::filter(H1.0vH1.1_sig==-1) %>% arrange(H1.0vH1.1_LFC) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.0vH1.1_down.txt")
-
-tt %>% dplyr::filter(H1.0vH1.2_sig==1) %>% arrange(desc(H1.0vH1.2_LFC)) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.0vH1.2_up.txt")
-tt %>% dplyr::filter(H1.0vH1.2_sig==-1) %>% arrange(H1.0vH1.2_LFC) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.0vH1.2_down.txt")
-
-tt %>% dplyr::filter(H1.1vH1.2_sig==1) %>% arrange(desc(H1.1vH1.2_LFC)) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.1vH1.2_up.txt")
-tt %>% dplyr::filter(H1.1vH1.2_sig==-1) %>% arrange(H1.1vH1.2_LFC) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.1vH1.2_down.txt")
-
-tt %>% dplyr::filter(H1.4vH1.5_sig==1) %>% arrange(desc(H1.4vH1.5_LFC)) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.4vH1.5_up.txt")
-tt %>% dplyr::filter(H1.4vH1.5_sig==-1) %>% arrange(H1.4vH1.5_LFC) %>% 
-  pull(ENSGID) %>% mywrite(file="output/siglist_H1.4vH1.5_down.txt")
-
 ```
+
 
 ## Reactome Analysis
 
@@ -1052,6 +708,4 @@ length(entrezIDs) #1379
 pathway_XvsWT <- enrichPathway(as.vector(entrezIDs))
 dotplot(pathway_XvsWT)
 ```
-
-
 
